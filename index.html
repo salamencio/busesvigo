@@ -1,0 +1,250 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="theme-color" content="#0b5cab">
+<link rel="manifest" href="manifest.webmanifest">
+<link rel="icon" href="icons/icon-192.png">
+<link rel="apple-touch-icon" href="icons/apple-touch-icon.png">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-title" content="Buses Vigo">
+<title>Buses Vigo</title>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Barlow+Condensed:wght@500;700&family=Barlow:wght@400;600&display=swap">
+<style>
+:root{--bg:#e9eef2;--ink:#14212b;--mute:#5b6b78;--card:#fff;--line:#cfd8df;--blue:#0b5cab;--led-bg:#161a1e;--led:#ffb324;--err:#b3261e}
+@media (prefers-color-scheme:dark){:root{--bg:#0f161c;--ink:#e6edf2;--mute:#92a1ad;--card:#18222a;--line:#2a3843;--blue:#5aa5ee;--err:#ff8a80}}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--ink);font:16px/1.4 Barlow,system-ui,sans-serif}
+main{max-width:640px;margin:0 auto;padding:20px 16px 48px}
+header{display:flex;justify-content:space-between;align-items:flex-end;gap:12px;margin-bottom:18px}
+h1{font:700 30px/1 "Barlow Condensed",sans-serif;margin:0}
+.sub{color:var(--mute);font-size:14px;margin-top:4px}
+button{font:inherit;cursor:pointer;border:1px solid var(--line);background:var(--card);color:var(--ink);border-radius:8px;padding:8px 12px}
+button:focus-visible,input:focus-visible{outline:3px solid var(--blue);outline-offset:2px}
+button.primary{background:var(--blue);border-color:var(--blue);color:#fff}
+button.danger{color:var(--err)}
+.stop{background:var(--card);border:1px solid var(--line);border-left:8px solid var(--blue);border-radius:10px;margin-bottom:16px;overflow:hidden}
+.stop h2{font:700 22px/1.1 "Barlow Condensed",sans-serif;margin:0;padding:14px 16px 2px}
+.meta{color:var(--mute);font-size:13px;padding:0 16px 12px}
+.board{background:var(--led-bg);padding:6px 16px}
+.row{display:grid;grid-template-columns:64px 1fr auto;gap:10px;align-items:baseline;padding:9px 0;border-bottom:1px dashed #323a42;color:var(--led)}
+.row:last-child{border:0}
+.line{font:700 26px "Barlow Condensed",sans-serif}
+.route{color:#d9c9a6;font-size:14px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.min{font:700 28px "Barlow Condensed",sans-serif;text-align:right;min-width:70px}
+.min small{font-size:14px;font-weight:500}
+.msg{padding:16px;color:#d9c9a6;font-size:15px}
+.err{color:var(--err);padding:12px 16px;font-size:14px}
+.bar{padding:12px 16px;border-top:1px solid var(--line);display:flex;gap:8px;flex-wrap:wrap;align-items:center}
+.bar .upd{color:var(--mute);font-size:13px;flex:1 1 100px}
+input{font:inherit;padding:10px;border:1px solid var(--line);border-radius:8px;background:var(--bg);color:var(--ink);min-width:0;flex:1 1 160px}
+.empty{background:var(--card);border:1px dashed var(--line);border-radius:10px;padding:28px 18px;text-align:center;color:var(--mute)}
+.empty strong{display:block;color:var(--ink);font:700 22px "Barlow Condensed",sans-serif;margin-bottom:6px}
+.add{background:var(--card);border:1px solid var(--line);border-radius:10px;padding:14px 16px;margin-bottom:16px}
+.add h3{margin:0 0 10px;font:700 20px "Barlow Condensed",sans-serif}
+.add .q{display:flex;gap:8px}
+.results{display:flex;flex-direction:column;gap:6px;margin-top:10px}
+.results button{text-align:left}
+.results button[disabled]{opacity:.5}
+.hint{font-size:13px;color:var(--mute);margin:8px 0 0}
+</style>
+</head>
+<body>
+<main>
+  <header>
+    <div>
+      <h1>Buses Vigo</h1>
+      <div class="sub" id="status">Tus paradas</div>
+    </div>
+    <button class="primary" id="addbtn">+ Añadir parada</button>
+  </header>
+  <section id="addpanel"></section>
+  <section id="stops"></section>
+</main>
+
+<script>
+const API='https://datos.vigo.org/vci_api_app/api2.jsp';
+const STOPS_URL='https://datos.vigo.org/data/transporte/paradas.json';
+const REFRESH_MS=30000;
+const KEY='buses-vigo-paradas';
+let stops=[];            // [{id,name}] elegidas por ti
+let catalog=null;        // lista completa de paradas del Concello
+let adding=false;
+const add={q:'',results:null,error:null,busy:false};
+const state={};          // id -> {buses,raw,error,at,busy,confirm}
+
+function load(){try{const v=JSON.parse(localStorage.getItem(KEY)||'[]');if(Array.isArray(v))stops=v.filter(x=>x&&x.id&&x.name);}catch(e){}}
+function save(){try{localStorage.setItem(KEY,JSON.stringify(stops));}catch(e){}}
+
+const norm=t=>String(t).normalize('NFD').replace(/[\u0300-\u036f]/g,'').toLowerCase();
+const esc=s=>String(s).replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+const pick=(o,keys)=>{for(const k of keys){if(o[k]!==undefined&&o[k]!==null&&o[k]!=='')return o[k];}return undefined;};
+const hora=()=>new Date().toLocaleTimeString('es-ES',{hour:'2-digit',minute:'2-digit',second:'2-digit'});
+
+// Conexión: directa y, si el navegador la bloquea, a través de proxies públicos
+const ROUTES=[
+  u=>u,
+  u=>'https://corsproxy.io/?url='+encodeURIComponent(u),
+  u=>'https://api.allorigins.win/raw?url='+encodeURIComponent(u),
+  u=>'https://api.codetabs.com/v1/proxy?quest='+encodeURIComponent(u)
+];
+let okRoute=0;
+async function getJSON(u){
+  const order=ROUTES.map((_,i)=>i);order.splice(order.indexOf(okRoute),1);order.unshift(okRoute);
+  let last='';
+  for(const i of order){
+    let t;
+    try{
+      const timeout=new Promise((_,rej)=>{t=setTimeout(()=>rej(new Error('tiempo agotado')),9000);});
+      const r=await Promise.race([fetch(ROUTES[i](u)),timeout]);
+      if(!r.ok)throw new Error('HTTP '+r.status);
+      const buf=await Promise.race([r.arrayBuffer(),timeout]);
+      let txt;
+      try{txt=new TextDecoder('utf-8',{fatal:true}).decode(buf);}catch(_){txt=new TextDecoder('windows-1252').decode(buf);}
+      const d=JSON.parse(txt);
+      clearTimeout(t);okRoute=i;return d;
+    }catch(e){clearTimeout(t);last=e.message;}
+  }
+  throw new Error('ninguna ruta de conexión funcionó ('+last+')');
+}
+
+function firstArray(d){
+  if(Array.isArray(d))return d;
+  if(d&&typeof d==='object'){
+    if(Array.isArray(d.features))return d.features.map(f=>({...f.properties}));
+    for(const k in d)if(Array.isArray(d[k]))return d[k];
+  }
+  return [];
+}
+function findBuses(d,out=[]){
+  if(Array.isArray(d)){d.forEach(x=>findBuses(x,out));}
+  else if(d&&typeof d==='object'){
+    const keys=Object.keys(d);
+    const lk=keys.find(k=>/^(linea|line|lin|codlinea|cod_linea|idlinea)$/i.test(k));
+    const mk=keys.find(k=>/^(minutos|min|minuto|tiempo|time|minutes|estimacion)$/i.test(k));
+    if(lk&&mk)out.push({line:d[lk],route:pick(d,['ruta','destino','route','sentido','trayecto'])??'',time:parseFloat(String(d[mk]))});
+    else keys.forEach(k=>findBuses(d[k],out));
+  }
+  return out;
+}
+
+async function loadCatalog(){
+  if(catalog)return catalog;
+  catalog=firstArray(await getJSON(STOPS_URL)).map(o=>({
+    id:pick(o,['id','idParada','id_parada','parada','codigo','code','stop_id','numero']),
+    name:pick(o,['nombre','name','descripcion','denominacion','title','parada_nombre'])
+  })).filter(x=>x.id!==undefined&&x.name);
+  return catalog;
+}
+
+async function doSearch(q){
+  add.q=q;add.error=null;add.results=null;
+  if(norm(q).trim().length<2){add.error='Escribe al menos 2 letras o el número de la parada.';renderAdd();return;}
+  add.busy=true;renderAdd();
+  try{
+    const cat=await loadCatalog();
+    const words=norm(q).split(/[\s,]+/).filter(Boolean);
+    add.results=cat.filter(c=>{const n=norm(c.name)+' '+c.id;return words.every(w=>n.includes(w));}).slice(0,15);
+    if(!add.results.length)add.error='Sin resultados para «'+q+'». Prueba con menos palabras.';
+  }catch(e){add.error='No se pudo cargar la lista de paradas: '+e.message;}
+  add.busy=false;renderAdd();
+}
+
+async function loadBuses(stop){
+  const st=state[stop.id]=state[stop.id]||{};
+  st.error=null;
+  try{
+    const d=await getJSON(API+'?id='+encodeURIComponent(stop.id)+'&ttl=5&tipo=TRANSPORTE-ESTIMACION-PARADA');
+    st.at=hora();
+    st.buses=findBuses(d).sort((a,b)=>(a.time||0)-(b.time||0));
+    const vacio=d===null||(Array.isArray(d)&&!d.length)||(typeof d==='object'&&!Object.keys(d).length);
+    st.raw=(!st.buses.length&&!vacio)?JSON.stringify(d).slice(0,900):null;
+  }catch(e){st.buses=null;st.error='No se pudo cargar: '+e.message;}
+}
+
+const minText=t=>!Number.isFinite(t)?'–':(t<=0?'Ya':t+' <small>min</small>');
+
+function renderAdd(){
+  const el=document.getElementById('addpanel');
+  el.innerHTML='';
+  document.getElementById('addbtn').textContent=adding?'Cerrar':'+ Añadir parada';
+  if(!adding)return;
+  const box=document.createElement('div');box.className='add';
+  box.innerHTML=`<h3>Añadir parada</h3>
+    <div class="q"><input id="aq" aria-label="Buscar parada" placeholder="Calle y número, o nº de parada" value="${esc(add.q)}"><button class="primary" id="ago">${add.busy?'Buscando…':'Buscar'}</button></div>
+    <p class="hint">Ejemplo: «Torrecedeira 105» o «Cánovas Centro Comercial».</p>`;
+  const inp=box.querySelector('#aq');
+  const go=()=>doSearch(inp.value);
+  box.querySelector('#ago').onclick=go;
+  inp.onkeydown=e=>{if(e.key==='Enter')go();};
+  if(add.error){const p=document.createElement('div');p.className='err';p.style.padding='10px 0 0';p.setAttribute('role','alert');p.textContent=add.error;box.appendChild(p);}
+  if(add.results&&add.results.length){
+    const res=document.createElement('div');res.className='results';
+    add.results.forEach(r=>{
+      const ya=stops.some(s=>s.id===String(r.id));
+      const b=document.createElement('button');
+      b.textContent=r.name+' (nº '+r.id+')'+(ya?' · ya añadida':'');
+      b.disabled=ya;
+      b.onclick=async()=>{
+        stops.push({id:String(r.id),name:String(r.name)});save();
+        adding=false;add.results=null;add.q='';
+        render();await loadBuses(stops[stops.length-1]);render();
+      };
+      res.appendChild(b);
+    });
+    box.appendChild(res);
+  }
+  el.appendChild(box);
+  if(!add.results&&!add.busy)setTimeout(()=>inp.focus(),0);
+}
+
+function render(){
+  renderAdd();
+  const root=document.getElementById('stops');root.innerHTML='';
+  if(!stops.length){
+    root.innerHTML='<div class="empty"><strong>Aún no tienes paradas</strong>Pulsa «Añadir parada» para elegir las que quieres ver.</div>';
+    return;
+  }
+  stops.forEach(stop=>{
+    const st=state[stop.id]||{};
+    let body;
+    if(st.buses&&st.buses.length){
+      body='<div class="board">'+st.buses.slice(0,6).map(b=>`<div class="row"><span class="line">${esc(b.line)}</span><span class="route">${esc(b.route)}</span><span class="min">${minText(b.time)}</span></div>`).join('')+'</div>';
+    }else if(st.buses&&st.raw){
+      body='<div class="board"><div class="msg">Formato no reconocido. Envía una captura de esto:<pre style="white-space:pre-wrap;word-break:break-all;font-size:11px">'+esc(st.raw)+'</pre></div></div>';
+    }else if(st.buses){
+      body='<div class="board"><div class="msg">No hay buses próximos en esta parada.</div></div>';
+    }else if(!st.error){
+      body='<div class="board"><div class="msg">Cargando…</div></div>';
+    }else body='';
+    const el=document.createElement('article');el.className='stop';
+    el.innerHTML=`<h2>${esc(stop.name)}</h2><div class="meta">Parada nº ${esc(stop.id)}</div>${body}${st.error?`<div class="err" role="alert">${esc(st.error)}</div>`:''}
+      <div class="bar"><button class="primary" data-a="r">${st.busy?'Actualizando…':'Actualizar'}</button><span class="upd">${st.at?'Actualizado a las '+st.at:''}</span><button class="danger" data-a="x">${st.confirm?'¿Seguro? Pulsa otra vez':'Quitar'}</button></div>`;
+    el.querySelector('[data-a=r]').onclick=async()=>{st.busy=true;state[stop.id]=st;render();await loadBuses(stop);state[stop.id].busy=false;render();};
+    el.querySelector('[data-a=x]').onclick=()=>{
+      if(!st.confirm){st.confirm=true;state[stop.id]=st;render();setTimeout(()=>{if(state[stop.id]){state[stop.id].confirm=false;render();}},4000);return;}
+      stops=stops.filter(s=>s.id!==stop.id);delete state[stop.id];save();render();
+    };
+    root.appendChild(el);
+  });
+}
+
+async function refreshAll(){
+  if(!stops.length)return;
+  document.getElementById('status').textContent='Actualizando…';
+  await Promise.all(stops.map(loadBuses));
+  render();
+  document.getElementById('status').textContent='Actualizado a las '+hora();
+}
+
+document.getElementById('addbtn').onclick=()=>{adding=!adding;renderAdd();};
+load();render();refreshAll();
+setInterval(refreshAll,REFRESH_MS);
+if('serviceWorker' in navigator && location.protocol.startsWith('http')){
+  window.addEventListener('load',()=>navigator.serviceWorker.register('sw.js').catch(()=>{}));
+}
+</script>
+</body>
+</html>
